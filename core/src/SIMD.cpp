@@ -14,8 +14,15 @@ namespace ac::core::simd::detail
         bool sse2;
         bool avx;
         bool avx2;
+        bool avx512;
         bool fma;
         bool neon;
+        bool rvv;
+        bool lsx;
+        bool lasx;
+        bool msa;
+        bool altivec;
+        bool vsx;
     public:
         static const ISA& instance() noexcept
         {
@@ -30,8 +37,15 @@ namespace ac::core::simd::detail
             sse2 = ruapu_supports("sse2");
             avx = ruapu_supports("avx");
             avx2 = ruapu_supports("avx2");
+            avx512 = ruapu_supports("avx512f");
             fma = ruapu_supports("fma");
             neon = ruapu_supports("neon");
+            rvv = ruapu_supports("v");
+            lsx = ruapu_supports("lsx");
+            lasx = ruapu_supports("lasx");
+            msa = ruapu_supports("msa");
+            altivec = ruapu_supports("altivec");
+            vsx = ruapu_supports("vsx");
         }
     };
 }
@@ -52,6 +66,10 @@ bool ac::core::simd::supportAVX2() noexcept
 {
     return gISA.avx2;
 }
+bool ac::core::simd::supportAVX512() noexcept
+{
+    return gISA.avx512;
+}
 bool ac::core::simd::supportFMA() noexcept
 {
     return gISA.fma;
@@ -59,4 +77,28 @@ bool ac::core::simd::supportFMA() noexcept
 bool ac::core::simd::supportNEON() noexcept
 {
     return gISA.neon;
+}
+bool ac::core::simd::supportRVV() noexcept
+{
+    return gISA.rvv;
+}
+bool ac::core::simd::supportLSX() noexcept
+{
+    return gISA.lsx;
+}
+bool ac::core::simd::supportLASX() noexcept
+{
+    return gISA.lasx;
+}
+bool ac::core::simd::supportMSA() noexcept
+{
+    return gISA.msa;
+}
+bool ac::core::simd::supportAltiVec() noexcept
+{
+    return gISA.altivec;
+}
+bool ac::core::simd::supportVSX() noexcept
+{
+    return gISA.vsx;
 }

@@ -1,9 +1,10 @@
 #include <atomic>
 
+#include <QThreadPool>
+
 #include "AC/Core.hpp"
 #include "AC/Util/Defer.hpp"
 #include "AC/Util/Stopwatch.hpp"
-#include "AC/Util/ThreadPool.hpp"
 
 #include "Config.hpp"
 #include "Logger.hpp"
@@ -73,11 +74,11 @@ void Upscaler::start(const QList<QSharedPointer<TaskData>>& taskList)
             videoTaskList << task;
     }
 
-    static auto threads = ac::util::ThreadPool::hardwareThreads();
-    static ac::util::ThreadPool pool{ dptr->processor->type() == ac::core::Processor::CPU ? threads / 4 + 1 : threads / 2 + 1 };
+    static QThreadPool pool{};
+    pool.setMaxThreadCount((gConfig.upscaler.threads > 0) ? gConfig.upscaler.threads : QThread::idealThreadCount());
 
 #ifdef AC_CLI_ENABLE_VIDEO
-    pool.exec([=](){
+    pool.start([=](){
         auto decoder = gConfig.video.decoder.toLocal8Bit();
         auto format = gConfig.video.format.toLocal8Bit();
         auto encoder = gConfig.video.encoder.toLocal8Bit();
@@ -90,6 +91,10 @@ void Upscaler::start(const QList<QSharedPointer<TaskData>>& taskList)
         ehints.format = format;
         ehints.bitrate = bitrate;
 
+        auto videoFilterModel = AC_VIDEO_FILTER_MODE_AUTO;
+        if (gConfig.upscaler.threads == 1) videoFilterModel = AC_VIDEO_FILTER_MODE_SERIAL;
+        else if (gConfig.upscaler.threads > 1) videoFilterModel = AC_VIDEO_FILTER_MODE_PARALLEL_WITH_WORKERS(gConfig.upscaler.threads);
+
         for (auto&& task : videoTaskList)
         {
             ac::util::Defer defer([this]() { if (dptr->total.fetch_sub(1, std::memory_order_relaxed) == 1) emit stopped(); });
@@ -98,7 +103,6 @@ void Upscaler::start(const QList<QSharedPointer<TaskData>>& taskList)
             {
                 ac::video::Pipeline pipeline{};
 
-                gLogger.info() << "Load video from " << task->path.input;
                 if (!pipeline.openDecoder(task->path.input.toUtf8(), dhints)) // ffmpeg api uses utf8 for io
                 {
                     gLogger.error() << task->path.input << ": Failed to open decoder";
@@ -158,12 +162,10 @@ void Upscaler::start(const QList<QSharedPointer<TaskData>>& taskList)
                         return false;
                     }
                     return true;
-                }, &data, ac::video::FILTER_AUTO);
+                }, &data, videoFilterModel);
                 stopwatch.stop();
                 pipeline.close();
                 if (data.error.load(std::memory_order_relaxed)) gLogger.error() << task->path.input << ": Failed due to " << data.error.load(std::memory_order_relaxed);
-                else gLogger.info() << task->path.input << ": Finished in " << stopwatch.elapsed() << "s [" << dptr->processor->typeName() << ' ' << dptr->processor->name() << ']';
-                gLogger.info() << "Save video to " << task->path.output;
             }
             emit progress(100);
             emit task->finished(!dptr->stopFlag.load(std::memory_order_relaxed) && dptr->processor->ok());
@@ -180,16 +182,14 @@ void Upscaler::start(const QList<QSharedPointer<TaskData>>& taskList)
 
     for (auto&& task : imageTaskList)
     {
-        pool.exec([=]() {
+        pool.start([=]() {
             ac::util::Defer defer([this]() { if (dptr->total.fetch_sub(1, std::memory_order_relaxed) == 1) emit stopped(); });
             if (!dptr->stopFlag.load(std::memory_order_relaxed))
             {
                 auto src = ac::core::imread(task->path.input.toLocal8Bit(), ac::core::IMREAD_UNCHANGED);
-                if (!src.empty())
-                    gLogger.info() << "Load image from " << task->path.input;
-                else
+                if (src.empty())
                 {
-                    gLogger.error() << "Failed to load image from " << task->path.input;
+                    gLogger.error() << task->path.input << ": Failed to load.";
                     emit task->finished(false);
                     return;
                 }
@@ -203,12 +203,10 @@ void Upscaler::start(const QList<QSharedPointer<TaskData>>& taskList)
                     emit task->finished(false);
                     return;
                 }
-                gLogger.info() << task->path.input << ": Finished in " << stopwatch.elapsed() << "s [" << dptr->processor->typeName() << ' ' << dptr->processor->name() << ']';
 
-                if (ac::core::imwrite(task->path.output.toLocal8Bit(), dst)) gLogger.info() << "Save image to " << task->path.output;
-                else
+                if (!ac::core::imwrite(task->path.output.toLocal8Bit(), dst))
                 {
-                    gLogger.error() << "Failed to save image to " << task->path.output;
+                    gLogger.error() << task->path.output << ": Failed to save.";
                     emit task->finished(false);
                     return;
                 }

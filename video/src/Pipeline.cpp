@@ -11,6 +11,7 @@ extern "C" {
 }
 
 #include "AC/Util/Defer.hpp"
+#include "AC/Util/Misc.hpp"
 #include "AC/Video/Pipeline.hpp"
 
 namespace ac::video
@@ -48,7 +49,9 @@ namespace ac::video
 
         private:
             bool writeHeaderFlag = false;
-            SwsContext* swsCtx = nullptr;
+            AVPixelFormat filterPixFmt = AV_PIX_FMT_NONE;
+            SwsContext* dSwsCtx = nullptr;
+            SwsContext* eSwsCtx = nullptr;
             AVFormatContext* dfmtCtx = nullptr;
             AVFormatContext* efmtCtx = nullptr;
             AVPacket* dpacket = nullptr;
@@ -103,8 +106,21 @@ namespace ac::video
             auto codec = (hints.encoder && *hints.encoder) ? avcodec_find_encoder_by_name(hints.encoder) : avcodec_find_encoder(AV_CODEC_ID_H264); if (!codec) return false;
             encoderCtx = avcodec_alloc_context3(codec); if (!encoderCtx) return false;
 
-            encoderCtx->pix_fmt = targetPixFmt != AV_PIX_FMT_NONE ? targetPixFmt : decoderCtx->pix_fmt;
-            switch (encoderCtx->pix_fmt)
+            filterPixFmt = targetPixFmt != AV_PIX_FMT_NONE ? targetPixFmt : decoderCtx->pix_fmt;
+
+#       if LIBAVCODEC_VERSION_INT >= AV_VERSION_INT(61, 19, 101) // FFmpeg 7.1, libavcodec 61.19.101
+            if (const AVPixelFormat* fmts = nullptr; avcodec_get_supported_config(encoderCtx, nullptr, AV_CODEC_CONFIG_PIX_FORMAT, 0, reinterpret_cast<const void**>(&fmts), nullptr) >= 0 && fmts)
+#       else
+            if (const AVPixelFormat* fmts = codec->pix_fmts)
+#       endif
+            {
+                for (auto pfmt = fmts; *pfmt != AV_PIX_FMT_NONE; pfmt++)
+                    if (*pfmt == filterPixFmt) encoderCtx->pix_fmt = filterPixFmt;
+                if (encoderCtx->pix_fmt != filterPixFmt) encoderCtx->pix_fmt = fmts[0];
+            }
+            else encoderCtx->pix_fmt = filterPixFmt;
+
+            switch (filterPixFmt)
             {
             case AV_PIX_FMT_GRAY8:
             case AV_PIX_FMT_GRAY10:
@@ -130,15 +146,22 @@ namespace ac::video
             case AV_PIX_FMT_NV24:
             case AV_PIX_FMT_NV42:
             case AV_PIX_FMT_P010:
-            case AV_PIX_FMT_P210:
+            case AV_PIX_FMT_P016:
             case AV_PIX_FMT_NV20:
+#       if LIBAVUTIL_VERSION_INT >= AV_VERSION_INT(57, 17, 100) // ffmpeg 5.0, libavutil 57.17.100
+            case AV_PIX_FMT_P210:
             case AV_PIX_FMT_P410:
+            case AV_PIX_FMT_P216:
+            case AV_PIX_FMT_P416:
+#       endif
+#       if LIBAVUTIL_VERSION_INT >= AV_VERSION_INT(58, 2, 100) // ffmpeg 6.0, libavutil 58.2.100
             case AV_PIX_FMT_P012:
+#       endif
+#       if LIBAVUTIL_VERSION_INT >= AV_VERSION_INT(58, 29, 100) // ffmpeg 6.1, libavutil 58.29.100
             case AV_PIX_FMT_P212:
             case AV_PIX_FMT_P412:
-            case AV_PIX_FMT_P016:
-            case AV_PIX_FMT_P216:
-            case AV_PIX_FMT_P416: break;
+#       endif
+                break;
             default: return false;
             }
             // just let encoder to choose a profile
@@ -152,13 +175,14 @@ namespace ac::video
             encoderCtx->rc_buffer_size = encoderCtx->rc_max_rate * 5; // 10s
             encoderCtx->gop_size = static_cast<decltype(encoderCtx->gop_size)>(10 * av_q2d(decoderCtx->framerate) + 0.5); // 10s gop size, maybe we should use dynamic gop size.
             encoderCtx->time_base = timeBase;
-            encoderCtx->width = static_cast<decltype(encoderCtx->width)>(decoderCtx->width * factor);
-            encoderCtx->height = static_cast<decltype(encoderCtx->height)>(decoderCtx->height * factor);
+            encoderCtx->width = ac::util::align(static_cast<decltype(encoderCtx->width)>(decoderCtx->width * factor), 2);
+            encoderCtx->height = ac::util::align(static_cast<decltype(encoderCtx->height)>(decoderCtx->height * factor), 2);
             encoderCtx->sample_aspect_ratio = decoderCtx->sample_aspect_ratio;
             encoderCtx->color_primaries = decoderCtx->color_primaries;
             encoderCtx->color_trc = decoderCtx->color_trc;
             encoderCtx->colorspace = decoderCtx->colorspace;
             encoderCtx->color_range = decoderCtx->color_range;
+            encoderCtx->thread_count = 0;
             if (efmtCtx->oformat->flags & AVFMT_GLOBALHEADER) encoderCtx->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
             ret = avcodec_open2(encoderCtx, codec, nullptr); if (ret < 0) return false;
             // copy all streams
@@ -167,8 +191,9 @@ namespace ac::video
             for (unsigned int i = 0; i < dfmtCtx->nb_streams; i++)
             {
                 bool isOtherStream = (dfmtCtx->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_ATTACHMENT) || (dfmtCtx->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_DATA);
-                if ((isOtherStream && (strcmp(efmtCtx->oformat->name, "matroska") != 0)) || // check if mkv
-                    (!isOtherStream && (avformat_query_codec(efmtCtx->oformat, dfmtCtx->streams[i]->codecpar->codec_id, FF_COMPLIANCE_NORMAL) < 1))) // check if the given container can store a codec
+                if (dfmtCtx->streams[i]->codecpar->codec_type != AVMEDIA_TYPE_VIDEO &&
+                    ((isOtherStream && (strcmp(efmtCtx->oformat->name, "matroska") != 0)) || // check if mkv
+                    (!isOtherStream && (avformat_query_codec(efmtCtx->oformat, dfmtCtx->streams[i]->codecpar->codec_id, FF_COMPLIANCE_NORMAL) < 1)))) // check if the given container can store a codec
                 {
                     streamIdxMap[i] = -1;
                     continue;
@@ -205,7 +230,11 @@ namespace ac::video
             }
 
             ret = avcodec_parameters_from_context(evideoStream->codecpar, encoderCtx); if (ret < 0) return false;
-            ret = avio_open2(&efmtCtx->pb, filename, AVIO_FLAG_WRITE, &efmtCtx->interrupt_callback, nullptr); if (ret < 0) return false;
+            if (!(efmtCtx->oformat->flags & AVFMT_NOFILE))
+            {
+                ret = avio_open2(&efmtCtx->pb, filename, AVIO_FLAG_WRITE, &efmtCtx->interrupt_callback, nullptr);
+                if (ret < 0) return false;
+            }
             ret = avformat_write_header(efmtCtx, nullptr); if (ret < 0) return false;
             writeHeaderFlag = true;
 
@@ -225,12 +254,12 @@ namespace ac::video
                 else return false;
             }
 
-            if (!swsCtx && (frame->format != encoderCtx->pix_fmt))// I think it can be assumed that the frame format will not change during decoding.
+            if (!dSwsCtx && (frame->format != filterPixFmt)) // I think it can be assumed that the frame format will not change during decoding.
             {
-                swsCtx = sws_getContext(frame->width, frame->height, static_cast<AVPixelFormat>(frame->format), frame->width, frame->height, encoderCtx->pix_fmt, SWS_FAST_BILINEAR | SWS_PRINT_INFO, nullptr, nullptr, nullptr);
-                if (!swsCtx) return false;
+                dSwsCtx = sws_getContext(frame->width, frame->height, static_cast<AVPixelFormat>(frame->format), frame->width, frame->height, filterPixFmt, SWS_FAST_BILINEAR | SWS_PRINT_INFO, nullptr, nullptr, nullptr);
+                if (!dSwsCtx) return false;
             }
-            if (swsCtx)
+            if (dSwsCtx)
             {
                 auto dstFrame = av_frame_alloc(); if (!dstFrame) return false;
                 bool finishDstFrame = false;
@@ -238,13 +267,13 @@ namespace ac::video
                 ret = av_frame_copy_props(dstFrame, frame); if (ret < 0) return false;
                 dstFrame->width = frame->width;
                 dstFrame->height = frame->height;
-                dstFrame->format = encoderCtx->pix_fmt;
-    #   if LIBAVUTIL_VERSION_MAJOR < 57 // ffmpeg 5, libavutil 57
+                dstFrame->format = filterPixFmt;
+#           if LIBSWSCALE_VERSION_INT < AV_VERSION_INT(6, 4, 100) // ffmpeg 5.0, libswscale 6.4.100
                 ret = av_frame_get_buffer(dstFrame, 0); if (ret < 0) return false;
-                if (sws_scale(swsCtx, frame->data, frame->linesize, 0, frame->height, dstFrame->data, dstFrame->linesize) == dstFrame->height)
-    #   else
-                if (sws_scale_frame(swsCtx, dstFrame, frame) >= 0)
-    #   endif
+                if (sws_scale(dSwsCtx, frame->data, frame->linesize, 0, frame->height, dstFrame->data, dstFrame->linesize) == dstFrame->height)
+#           else
+                if (sws_scale_frame(dSwsCtx, dstFrame, frame) >= 0)
+#           endif
                 {
                     av_frame_free(&frame);
                     frame = dstFrame;
@@ -256,11 +285,11 @@ namespace ac::video
             finishFrame = true;
             fill(dst, frame, packetBuffer);
 
-    #   if LIBAVCODEC_VERSION_MAJOR < 60 // ffmpeg 6, libavcodec 60
+#       if LIBAVCODEC_VERSION_MAJOR < 60 // ffmpeg 6, libavcodec 60
             dst.number = decoderCtx->frame_number;
-    #   else
+#       else
             dst.number = decoderCtx->frame_num;
-    #   endif
+#       endif
             return true;
         }
         inline bool PipelineImpl::encode(const Frame& src) noexcept
@@ -268,6 +297,35 @@ namespace ac::video
             int ret = 0;
             if (!src.dptr) return false;
             if (!remux(src.dptr->packets)) return false;
+
+            if (!eSwsCtx && (filterPixFmt != encoderCtx->pix_fmt)) // Assume that the frame format will not change during encoding as well.
+            {
+                eSwsCtx = sws_getContext(src.dptr->frame->width, src.dptr->frame->height, filterPixFmt, src.dptr->frame->width, src.dptr->frame->height, encoderCtx->pix_fmt, SWS_FAST_BILINEAR | SWS_PRINT_INFO, nullptr, nullptr, nullptr);
+                if (!eSwsCtx) return false;
+            }
+            if (eSwsCtx)
+            {
+                auto dstFrame = av_frame_alloc(); if (!dstFrame) return false;
+                bool finishDstFrame = false;
+                util::Defer deferFreeDstFrame{ [&]() { if (!finishDstFrame) av_frame_free(&dstFrame); } };
+                ret = av_frame_copy_props(dstFrame, src.dptr->frame); if (ret < 0) return false;
+                dstFrame->width = src.dptr->frame->width;
+                dstFrame->height = src.dptr->frame->height;
+                dstFrame->format = encoderCtx->pix_fmt;
+#           if LIBSWSCALE_VERSION_INT < AV_VERSION_INT(6, 4, 100) // ffmpeg 5.0, libswscale 6.4.100
+                ret = av_frame_get_buffer(dstFrame, 0); if (ret < 0) return false;
+                if (sws_scale(eSwsCtx, src.dptr->frame->data, src.dptr->frame->linesize, 0, src.dptr->frame->height, dstFrame->data, dstFrame->linesize) == dstFrame->height)
+#           else
+                if (sws_scale_frame(eSwsCtx, dstFrame, src.dptr->frame) >= 0)
+#           endif
+                {
+                    av_frame_free(&src.dptr->frame);
+                    src.dptr->frame = dstFrame;
+                    finishDstFrame = true;
+                }
+                else return false;
+            }
+
             ret = avcodec_send_frame(encoderCtx, src.dptr->frame); if (ret < 0) return false;
             for (;;)
             {
@@ -288,7 +346,7 @@ namespace ac::video
 
             dstFrame->width = encoderCtx->width;
             dstFrame->height = encoderCtx->height;
-            dstFrame->format = encoderCtx->pix_fmt;
+            dstFrame->format = filterPixFmt;
 
             dstFrame->pts = srcFrame->pts;
 
@@ -348,16 +406,22 @@ namespace ac::video
                 av_write_trailer(efmtCtx);
                 writeHeaderFlag = false;
             }
-            if (swsCtx)
+            filterPixFmt = AV_PIX_FMT_NONE;
+            if (eSwsCtx)
             {
-                sws_freeContext(swsCtx);
-                swsCtx = nullptr;
+                sws_freeContext(eSwsCtx);
+                eSwsCtx = nullptr;
+            }
+            if (dSwsCtx)
+            {
+                sws_freeContext(dSwsCtx);
+                dSwsCtx = nullptr;
             }
             if (encoderCtx) avcodec_free_context(&encoderCtx);
             if (decoderCtx) avcodec_free_context(&decoderCtx);
             if (efmtCtx)
             {
-                avio_closep(&efmtCtx->pb);
+                if (!(efmtCtx->oformat->flags & AVFMT_NOFILE) && efmtCtx->pb) avio_closep(&efmtCtx->pb);
                 avformat_free_context(efmtCtx);
                 efmtCtx = nullptr;
             }
@@ -375,7 +439,7 @@ namespace ac::video
             Info info{};
             info.width = decoderCtx->width;
             info.height = decoderCtx->height;
-            info.bitDepth = getBitDepth(encoderCtx->pix_fmt);
+            info.bitDepth = getBitDepth(filterPixFmt);
             info.fps = av_q2d(av_inv_q(timeBase));
 
             if (dvideoStream->duration != AV_NOPTS_VALUE) info.duration = dvideoStream->duration * av_q2d(dvideoStream->time_base);
@@ -455,6 +519,7 @@ namespace ac::video
             case AV_PIX_FMT_NV16: hscale = 1; [[fallthrough]];
             case AV_PIX_FMT_NV21:
             case AV_PIX_FMT_NV12: planes = 2; break;
+#       if LIBAVUTIL_VERSION_INT >= AV_VERSION_INT(58, 29, 100) // ffmpeg 6.1, libavutil 58.29.100
             case AV_PIX_FMT_P410:
             case AV_PIX_FMT_P412:
             case AV_PIX_FMT_P416: wscale = 1; [[fallthrough]];
@@ -462,8 +527,24 @@ namespace ac::video
             case AV_PIX_FMT_P210:
             case AV_PIX_FMT_P212:
             case AV_PIX_FMT_P216: hscale = 1; [[fallthrough]];
-            case AV_PIX_FMT_P010:
             case AV_PIX_FMT_P012:
+#       elif LIBAVUTIL_VERSION_INT >= AV_VERSION_INT(58, 2, 100) // ffmpeg 6.0, libavutil 58.2.100
+            case AV_PIX_FMT_P410:
+            case AV_PIX_FMT_P416: wscale = 1; [[fallthrough]];
+            case AV_PIX_FMT_NV20:
+            case AV_PIX_FMT_P210:
+            case AV_PIX_FMT_P216: hscale = 1; [[fallthrough]];
+            case AV_PIX_FMT_P012:
+#       elif LIBAVUTIL_VERSION_INT >= AV_VERSION_INT(57, 17, 100) // ffmpeg 5.0, libavutil 57.17.100
+            case AV_PIX_FMT_P410:
+            case AV_PIX_FMT_P416: wscale = 1; [[fallthrough]];
+            case AV_PIX_FMT_NV20:
+            case AV_PIX_FMT_P210:
+            case AV_PIX_FMT_P216: hscale = 1; [[fallthrough]];
+#       else
+            case AV_PIX_FMT_NV20: hscale = 1; [[fallthrough]];
+#       endif
+            case AV_PIX_FMT_P010:
             case AV_PIX_FMT_P016: elementSize = sizeof(std::uint16_t); planes = 2; break;
             default: break;
             }
@@ -493,6 +574,7 @@ namespace ac::video
             case AV_PIX_FMT_YUV422P10:
             case AV_PIX_FMT_YUV444P10:
             case AV_PIX_FMT_NV20: bitDepth.lsb = true; [[fallthrough]];
+#       if LIBAVUTIL_VERSION_INT >= AV_VERSION_INT(58, 29, 100) // ffmpeg 6.1, libavutil 58.29.100
             case AV_PIX_FMT_P410:
             case AV_PIX_FMT_P210:
             case AV_PIX_FMT_P010: bitDepth.bits = 10; break;
@@ -503,12 +585,40 @@ namespace ac::video
             case AV_PIX_FMT_P412:
             case AV_PIX_FMT_P212:
             case AV_PIX_FMT_P012: bitDepth.bits = 12; break;
+            case AV_PIX_FMT_P416:
+            case AV_PIX_FMT_P216:
+#       elif LIBAVUTIL_VERSION_INT >= AV_VERSION_INT(58, 2, 100) // ffmpeg 6.0, libavutil 58.2.100
+            case AV_PIX_FMT_P410:
+            case AV_PIX_FMT_P210:
+            case AV_PIX_FMT_P010: bitDepth.bits = 10; break;
+            case AV_PIX_FMT_GRAY12:
+            case AV_PIX_FMT_YUV420P12:
+            case AV_PIX_FMT_YUV422P12:
+            case AV_PIX_FMT_YUV444P12: bitDepth.lsb = true; [[fallthrough]];
+            case AV_PIX_FMT_P012: bitDepth.bits = 12; break;
+            case AV_PIX_FMT_P416:
+            case AV_PIX_FMT_P216:
+#       elif LIBAVUTIL_VERSION_INT >= AV_VERSION_INT(57, 17, 100) // ffmpeg 5.0, libavutil 57.17.100
+            case AV_PIX_FMT_P410:
+            case AV_PIX_FMT_P210:
+            case AV_PIX_FMT_P010: bitDepth.bits = 10; break;
+            case AV_PIX_FMT_GRAY12:
+            case AV_PIX_FMT_YUV420P12:
+            case AV_PIX_FMT_YUV422P12:
+            case AV_PIX_FMT_YUV444P12: bitDepth.lsb = true; bitDepth.bits = 12; break;
+            case AV_PIX_FMT_P416:
+            case AV_PIX_FMT_P216:
+#       else
+            case AV_PIX_FMT_P010: bitDepth.bits = 10; break;
+            case AV_PIX_FMT_GRAY12:
+            case AV_PIX_FMT_YUV420P12:
+            case AV_PIX_FMT_YUV422P12:
+            case AV_PIX_FMT_YUV444P12: bitDepth.lsb = true; bitDepth.bits = 12; break;
+#       endif
             case AV_PIX_FMT_GRAY16:
             case AV_PIX_FMT_YUV420P16:
             case AV_PIX_FMT_YUV422P16:
             case AV_PIX_FMT_YUV444P16:
-            case AV_PIX_FMT_P416:
-            case AV_PIX_FMT_P216:
             case AV_PIX_FMT_P016: bitDepth.bits = 16; break;
             default: break;
             }

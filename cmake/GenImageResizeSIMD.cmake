@@ -6,11 +6,7 @@ function(generate_image_resize_simd SIMD_VAR OUTPUT_FILE_PATH_VAR)
 #define STBIR_@SIMD_UPPER@
 
 #ifdef STBIR_AVX2
-    #define STBIR_USE_FMA
-#endif
-
-#ifdef STBIR_USE_FMA
-    #define STBIR_AVX
+#   define STBIR_USE_FMA
 #endif
 
 #define STB_IMAGE_RESIZE2_IMPLEMENTATION

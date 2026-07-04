@@ -34,9 +34,10 @@ PYBIND11_MODULE(pyac, m)
             if (src.format == py::format_descriptor<std::uint8_t>::format()) return ac::core::Image::UInt8;
             if (src.format == py::format_descriptor<std::uint16_t>::format()) return ac::core::Image::UInt16;
             if (src.format == py::format_descriptor<float>::format()) return ac::core::Image::Float32;
-            throw py::buffer_error{ "Incompatible type: expected uint8, uint16 or float32." };
-            }();
-        py::array out{ in.dtype(), dstC == 1 ? py::array::ShapeContainer{ dstH, dstW } : py::array::ShapeContainer{ dstH, dstW, dstC } };
+            if (src.format == "e") return ac::core::Image::Float16;
+            throw py::buffer_error{ "Incompatible type: expected uint8, uint16, float16 or float32." };
+        }();
+        py::array out{ in.dtype(), (src.ndim == 2) ? py::array::ShapeContainer{ dstH, dstW } : py::array::ShapeContainer{ dstH, dstW, dstC } };
         auto dst = out.request();
         ac::core::Image srci{ srcW, srcH, srcC, type, src.ptr, static_cast<int>(src.strides[0]) };
         ac::core::Image dsti{ dstW, dstH, dstC, type, dst.ptr, static_cast<int>(dst.strides[0]) };
@@ -48,7 +49,7 @@ PYBIND11_MODULE(pyac, m)
     py::class_<ac::core::Processor, std::shared_ptr<ac::core::Processor>>(core, "Processor")
         .def(py::init([](const char* type, const int device, const char* model) {
             return ac::core::Processor::create(type, device, model);
-        }), py::arg("type") = "cpu", py::arg("device") = 0, py::arg("model") = ac::specs::ModelList[0])
+        }), py::arg("type") = "auto", py::arg("device") = 0, py::arg("model") = "acnet-f8b8-hdn")
         .def("process", processNumpyArray, py::arg("src"), py::arg("factor") = 2.0)
         .def("ok", &ac::core::Processor::ok)
         .def("error", &ac::core::Processor::error)
@@ -117,7 +118,8 @@ PYBIND11_MODULE(pyac, m)
             if (src.format == py::format_descriptor<std::uint8_t>::format()) return ac::core::Image::UInt8;
             if (src.format == py::format_descriptor<std::uint16_t>::format()) return ac::core::Image::UInt16;
             if (src.format == py::format_descriptor<float>::format()) return ac::core::Image::Float32;
-            throw py::buffer_error{ "Incompatible type: expected uint8, uint16 or float32." };
+            if (src.format == "e") return ac::core::Image::Float16;
+            throw py::buffer_error{ "Incompatible type: expected uint8, uint16, float16 or float32." };
         }();
 
         py::array out{ in.dtype(), dstC == 1 ? py::array::ShapeContainer{ dstH, dstW } : py::array::ShapeContainer{ dstH, dstW, dstC } };
@@ -149,22 +151,41 @@ PYBIND11_MODULE(pyac, m)
 
     core.def("imwrite", [](const char* filename, const py::array_t<std::uint8_t> in) {
         auto src = in.request();
-        if (src.ndim != 3) throw py::buffer_error{ "Incompatible dimension: expected 3." };
+        if (src.ndim != 2 && src.ndim != 3) throw py::buffer_error{ "Incompatible dimension: expected 2 or 3." };
 
-        return ac::core::imwrite(filename, { static_cast<int>(src.shape[1]), static_cast<int>(src.shape[0]), static_cast<int>(src.shape[2]), ac::core::Image::UInt8, src.ptr, static_cast<int>(src.strides[0]) });
+        return ac::core::imwrite(filename, { static_cast<int>(src.shape[1]), static_cast<int>(src.shape[0]), (src.ndim == 3) ? static_cast<int>(src.shape[2]) : 1, ac::core::Image::UInt8, src.ptr, static_cast<int>(src.strides[0]) });
     }, py::arg("filename"), py::arg("image"));
 
     auto specs = m.def_submodule("specs");
 
-    auto makeTuple = [](auto& arr) {
-        auto size = std::size(arr);
+    specs.attr("ModelList") = []() {
+        auto size = std::size(ac::specs::ModelList);
         py::tuple tuple{ size };
-        for (decltype(size) i = 0; i < size; i++) tuple[i] = arr[i];
+        for (decltype(size) i = 0; i < size; i++)
+        {
+            auto&& model = ac::specs::ModelList[i];
+            py::dict dict{};
+            dict["name"] = model.name;
+            dict["description"] = model.description;
+            dict["parameter_count"] = model.parameterCount;
+            dict["version"] = model.version;
+            dict["author"] = model.author;
+            dict["homepage"] = model.homepage;
+            tuple[i] = dict;
+        }
         return tuple;
-    };
-
-    specs.attr("ModelList") = makeTuple(ac::specs::ModelList);
-    specs.attr("ModelDescriptionList") = makeTuple(ac::specs::ModelDescriptionList);
-    specs.attr("ProcessorList") = makeTuple(ac::specs::ProcessorList);
-    specs.attr("ProcessorDescriptionList") = makeTuple(ac::specs::ProcessorDescriptionList);
+    }();
+    specs.attr("ProcessorList") = []() {
+        auto size = std::size(ac::specs::ProcessorList);
+        py::tuple tuple{ size };
+        for (decltype(size) i = 0; i < size; i++)
+        {
+            auto&& processor = ac::specs::ProcessorList[i];
+            py::dict dict{};
+            dict["name"] = processor.name;
+            dict["description"] = processor.description;
+            tuple[i] = dict;
+        }
+        return tuple;
+    }();
 }

@@ -4,6 +4,7 @@
 #include <avisynth.h>
 
 #include "AC/Core.hpp"
+#include "AC/Util/Misc.hpp"
 
 #ifdef _WIN32
 #   define EXPORT_API extern "C" __declspec(dllexport)
@@ -39,15 +40,15 @@ Filter::Filter(const AVSValue& args, IScriptEnvironment* const env) : GenericVid
 
     factor = args[1].Defined() ? args[1].AsFloat() : 2.0;
     if (factor <= 1.0) env->ThrowError("Anime4KCPP: %s", "this is a upscaler, so make sure factor > 1.0");
-    vi.width = static_cast<decltype(vi.width)>(vi.width * factor);
-    vi.height = static_cast<decltype(vi.height)>(vi.height * factor);
+    vi.width = ac::util::align(static_cast<decltype(vi.width)>(vi.width * factor), 2);
+    vi.height = ac::util::align(static_cast<decltype(vi.height)>(vi.height * factor), 2);
 
-    auto processorType = args[2].Defined() ? args[2].AsString() : "cpu";
+    auto processorType = args[2].Defined() ? args[2].AsString() : "auto";
 
     auto device = args[3].Defined() ? args[3].AsInt() : 0;
     if (device < 0) env->ThrowError("Anime4KCPP: %s", "the device index cannot be negative");
 
-    auto model = args[4].Defined() ? args[4].AsString() : "acnet-hdn0";
+    auto model = args[4].Defined() ? args[4].AsString() : "acnet-f8b8-hdn";
 
     processor = ac::core::Processor::create(processorType, device, model);
     if (!processor->ok()) env->ThrowError("Anime4KCPP: %s", processor->error());
@@ -74,7 +75,7 @@ PVideoFrame STDCALL Filter::GetFrame(const int n, IScriptEnvironment* const env)
     return dst;
 }
 
-const AVS_Linkage* AVS_linkage = 0;
+const AVS_Linkage* AVS_linkage = nullptr;
 
 EXPORT_API const char* STDCALL AvisynthPluginInit3(IScriptEnvironment* env, const AVS_Linkage* const vectors)
 {

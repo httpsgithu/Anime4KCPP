@@ -1,5 +1,5 @@
+#include <atomic>
 #include <cstdio>
-#include <iterator>
 #include <memory>
 
 #include "AC/Core.hpp"
@@ -8,11 +8,10 @@
 #include "AC/Util/ThreadPool.hpp"
 
 #include "Options.hpp"
+#include "ProgressBar.hpp"
 
 #ifdef AC_CLI_ENABLE_VIDEO
-#   include <atomic>
 #   include "AC/Video.hpp"
-#   include "ProgressBar.hpp"
 #endif
 
 static void list(const Options& options)
@@ -24,12 +23,12 @@ static void list(const Options& options)
             "  core version: " AC_CORE_VERSION_STR " (" AC_CORE_FEATURES ")\n"
             "  video module: "
 #           ifdef AC_CLI_ENABLE_VIDEO
-                AC_VIDEO_VERSION_STR "\n"
+                "enabled\n"
 #           else
                 "disabled\n"
 #           endif
             "  build date: " AC_BUILD_DATE "\n"
-            "  toolchain: " AC_COMPILER_ID " (v" AC_COMPILER_VERSION ")\n"
+            "  toolchain: " AC_COMPILER_ID " (" AC_COMPILER_VERSION ")\n"
             "  license: "
 #           ifdef AC_CLI_ENABLE_VIDEO
                 "GPLv3\n\n"
@@ -42,68 +41,88 @@ static void list(const Options& options)
     }
     if (options.list.devices)
     {
-        printf("Devices:\n");
+        std::printf("Devices:\n");
         std::printf("%s", ac::core::Processor::listInfo());
     }
     if (options.list.processors)
     {
-        printf("Processors:\n");
-        for (std::size_t i = 0; i < std::size(ac::specs::ProcessorList); i++) printf("  %-16s  %s\n", ac::specs::ProcessorList[i], ac::specs::ProcessorDescriptionList[i]);
+        std::printf("Processors:\n");
+        for (auto&& processor : ac::specs::ProcessorList) std::printf("  %-16s  %s\n", processor.name, processor.description);
     }
     if (options.list.models)
     {
-        printf("Models:\n");
-        for (std::size_t i = 0; i < std::size(ac::specs::ModelList); i++) printf("  %-16s  %s\n", ac::specs::ModelList[i], ac::specs::ModelDescriptionList[i]);
+        std::printf("Models:\n");
+        for (auto&& model : ac::specs::ModelList)
+        {
+            std::printf("  %s:\n", model.name);
+            std::printf("    parameter count: %d\n", model.parameterCount);
+            if (model.version) std::printf("    version: %s\n", model.version);
+            if (model.author) std::printf("    author: %s\n", model.author);
+            if (model.homepage) std::printf("    homepage: %s\n", model.homepage);
+            std::printf("    description: %s\n", model.description);
+        }
     }
 }
 
 static void image(const std::shared_ptr<ac::core::Processor>& processor, Options& options)
 {
-    auto batch = options.inputs.size();
-    auto threads = ac::util::ThreadPool::hardwareThreads();
-    auto targetThreads = processor->type() == ac::core::Processor::CPU ? threads / 4 + 1 : threads / 2 + 1;
+    auto batch = static_cast<int>(options.inputs.size());
+    auto hardwareThreads = ac::util::ThreadPool::hardwareThreads();
+    auto targetThreads = options.threads > 0 ? options.threads : ((processor->type() == ac::core::Processor::CPU) ? hardwareThreads / 4 + 1 : hardwareThreads / 2 + 1);
     auto poolSize = batch > targetThreads ? targetThreads : batch;
+
+    std::atomic_int count = 0;
+    ProgressBar progressBar{};
+
     auto task = [&](const int i) {
         auto& input = options.inputs[i];
         auto& output = options.outputs[i];
 
-        if (output.empty()) output = input + ".out.jpg";
+        if (output.empty()) output = input + ".out.png";
 
         auto src = ac::core::imread(input.c_str(), ac::core::IMREAD_UNCHANGED);
-        if (!src.empty())
-            std::printf("Load image from %s\n", input.c_str());
-        else
+        if (src.empty())
         {
-            std::printf("Failed to load image from %s\n", input.c_str());
+            progressBar.clear();
+            std::printf("%s: Failed to load.\n", input.c_str());
             return;
         }
 
-        ac::util::Stopwatch stopwatch{};
         auto dst = processor->process(src, options.factor);
-        stopwatch.stop();
         if (!processor->ok())
         {
+            progressBar.clear();
             std::printf("%s: Failed due to %s\n", input.c_str(), processor->error());
             return;
         }
-        auto elapsed = stopwatch.elapsed();
-        ac::util::Stopwatch::FormatBuffer elapsedBuffer{};
-        std::printf("%s: Finished in %lfs (%s)\n", input.c_str(), elapsed, ac::util::Stopwatch::formatDuration(elapsedBuffer, elapsed));
 
-        if (ac::core::imwrite(output.c_str(), dst))
-            std::printf("Save image to %s\n", output.c_str());
-        else
+        if (!ac::core::imwrite(output.c_str(), dst))
         {
-            std::printf("Failed to save image to %s\n", output.c_str());
+            progressBar.clear();
+            std::printf("%s: Failed to save.\n", output.c_str());
             return;
         }
+
+        if (count.fetch_add(1, std::memory_order_relaxed) % 32 == 0) progressBar.print(count / static_cast<double>(batch));
     };
+
+    if (batch > 1) std::printf("Load %d images.\n", batch);
+    else if (batch == 1) std::printf("Load image from %s\n", options.inputs[0].c_str());
+    progressBar.reset();
     if (poolSize > 1)
     {
         ac::util::ThreadPool pool{ poolSize };
         for (decltype(batch) i = 0; i < batch; i++) pool.exec([i, &task]() { task(i); });
     }
     else for (decltype(batch) i = 0; i < batch; i++) task(i);
+    progressBar.finish();
+    if (batch > 1)
+    {
+        auto failed = batch - count.load(std::memory_order_relaxed);
+        if (failed > 0) std::printf("Failed to process %d images.\n", failed);
+        if (count.load(std::memory_order_relaxed)) std::printf("Saved %d images.\n", count.load(std::memory_order_relaxed));
+    }
+    else if (batch == 1 && count.load(std::memory_order_relaxed)) std::printf("Saved image to %s\n", options.outputs[0].c_str());
 }
 
 static void video([[maybe_unused]] const std::shared_ptr<ac::core::Processor>& processor, [[maybe_unused]] Options& options)
@@ -115,6 +134,10 @@ static void video([[maybe_unused]] const std::shared_ptr<ac::core::Processor>& p
     ehints.encoder = options.video.encoder.c_str();
     ehints.format = options.video.format.c_str();
     ehints.bitrate = options.video.bitrate * 1000;
+
+    auto videoFilterModel = AC_VIDEO_FILTER_MODE_AUTO;
+    if (options.threads == 1) videoFilterModel = AC_VIDEO_FILTER_MODE_SERIAL;
+    else if (options.threads > 1) videoFilterModel = AC_VIDEO_FILTER_MODE_PARALLEL_WITH_WORKERS(options.threads);
 
     for (decltype(options.inputs.size()) i = 0; i < options.inputs.size(); i++)
     {
@@ -139,7 +162,6 @@ static void video([[maybe_unused]] const std::shared_ptr<ac::core::Processor>& p
 
         auto info = pipeline.getInfo();
 
-        ac::util::Stopwatch stopwatch{};
         ProgressBar progressBar{};
 
         struct {
@@ -158,7 +180,6 @@ static void video([[maybe_unused]] const std::shared_ptr<ac::core::Processor>& p
         data.error = nullptr;
 
         progressBar.reset();
-        stopwatch.reset();
         ac::video::filter(pipeline, [](ac::video::Frame& src, ac::video::Frame& dst, void* userdata) -> bool {
             auto ctx = static_cast<decltype(data)*>(userdata);
             // y
@@ -182,18 +203,13 @@ static void video([[maybe_unused]] const std::shared_ptr<ac::core::Processor>& p
             // a beautiful progress bar
             if (src.number % 32 == 0) ctx->progressBar->print(src.number / ctx->frames);
             return true;
-        }, &data, ac::video::FILTER_AUTO);
-        stopwatch.stop();
+        }, &data, videoFilterModel);
         progressBar.finish();
         pipeline.close();
-        if (data.error.load(std::memory_order_relaxed)) std::printf("%s: Failed due to %s\n", input.c_str(), data.error.load(std::memory_order_relaxed));
+        if (data.error.load(std::memory_order_relaxed))
+            std::printf("%s: Failed due to %s\n", input.c_str(), data.error.load(std::memory_order_relaxed));
         else
-        {
-            auto elapsed = stopwatch.elapsed();
-            ac::util::Stopwatch::FormatBuffer elapsedBuffer{};
-            std::printf("%s: Finished in %lfs (%s)\n", input.c_str(), elapsed, ac::util::Stopwatch::formatDuration(elapsedBuffer, elapsed));
-        }
-        std::printf("Save video to %s\n", output.c_str());
+            std::printf("Saved video to %s\n", output.c_str());
     }
 #else
     std::printf("This build does not support video processing\n");
@@ -231,7 +247,7 @@ int main(int argc, char* argv[])
 
     auto elapsed = stopwatch.elapsed();
     ac::util::Stopwatch::FormatBuffer elapsedBuffer{};
-    std::printf("\nInputs %d files, takes %lfs (%s)\n", static_cast<int>(options.inputs.size()), elapsed, ac::util::Stopwatch::formatDuration(elapsedBuffer, elapsed));
+    std::printf("\nProcessed %d files in %lfs (%s)\n", static_cast<int>(options.inputs.size()), elapsed, ac::util::Stopwatch::formatDuration(elapsedBuffer, elapsed));
 
     return 0;
 }

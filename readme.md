@@ -43,14 +43,17 @@ Manual configuration (optional):
 | [libswscale](https://ffmpeg.org)                                                                                                     | AC_BUILD_VIDEO              | video               | Manual      | pkg-config / AC_PATH_FFMPEG          |
 | [Qt](https://www.qt.io)                                                                                                              | AC_BUILD_GUI                | gui                 | Manual      | find_package                         |
 | [Avisynth SDK](https://github.com/AviSynth/AviSynthPlus/tree/master/avs_core/include)                                                | AC_BUILD_FILTER_AVISYNTH    | filter(avisynth)    | Automatic   | AC_PATH_AVISYNTH_SDK                 |
-| [CLI11](https://github.com/CLIUtils/CLI11)                                                                                           | AC_BUILD_CLI                | cli                 | Automatic   | find_package                         |
+| [CLI11](https://github.com/CLIUtils/CLI11)                                                                                           | AC_BUILD_CLI                | cli                 | Automatic   | find_package / AC_PATH_CLI11         |
 | [DirectShow BaseClasses](https://github.com/microsoft/Windows-classic-samples/Samples/Win7Samples/multimedia/directshow/baseclasses) | AC_BUILD_FILTER_DIRECTSHOW  | filter(directshow)  | Automatic   | AC_PATH_DIRECTSHOW_BASECLASSES       |
-| [Eigen3](https://gitlab.com/libeigen/eigen)                                                                                          | AC_CORE_WITH_EIGEN3         | core(eigen3)        | Automatic   | find_package                         |
+| [Eigen3](https://gitlab.com/libeigen/eigen)                                                                                          | AC_CORE_WITH_EIGEN3         | core(eigen3)        | Automatic   | find_package / AC_PATH_EIGEN3        |
 | [OpenCL SDK](https://github.com/KhronosGroup/OpenCL-SDK)                                                                             | AC_CORE_WITH_OPENCL         | core(opencl)        | Automatic   | find_package                         |
 | [pybind11](https://github.com/pybind/pybind11)                                                                                       | AC_BUILD_BINDING_PYTHON     | binding(python)     | Automatic   | find_package                         |
 | [ruapu](https://github.com/nihui/ruapu)                                                                                              | N/A                         | core                | Automatic   | AC_PATH_RUAPU                        |
 | [stb](https://github.com/nothings/stb)                                                                                               | N/A                         | core                | Automatic   | AC_PATH_STB                          |
+| [fpng](https://github.com/richgel999/fpng)                                                                                           | AC_CORE_WITH_FPNG           | core                | Automatic   | AC_PATH_FPNG                         |
+| [half](https://half.sourceforge.net)                                                                                                 | N/A                         | core                | Automatic   | AC_PATH_HALF                         |
 | [VapourSynth SDK](https://github.com/vapoursynth/vapoursynth/tree/master/include)                                                    | AC_BUILD_FILTER_VAPOURSYNTH | filter(vapoursynth) | Automatic   | pkg-config / AC_PATH_VAPOURSYNTH_SDK |
+| [doctest](https://github.com/doctest/doctest)                                                                                        | AC_BUILD_TESTS              | tests               | Automatic   | find_package / AC_PATH_DOCTEST       |
 
 - The minimum tested version of the CUDA Toolkit is 11.
 - The minimum version of FFmpeg libraries is FFmpeg 4.
@@ -135,12 +138,22 @@ Tested with Apple Clang via github actions, `MACOSX_DEPLOYMENT_TARGET` >= 10.12 
 | AC_SHARED_LIB                        | build as a shared library                          | OFF         |
 | AC_CORE_WITH_EIGEN3                  | build core with eigen3                             | OFF         |
 | AC_CORE_WITH_SSE                     | build core with x86 sse                            | Auto detect |
+| AC_CORE_WITH_SSE2                    | build core with x86 sse2                           | Auto detect |
 | AC_CORE_WITH_AVX                     | build core with x86 avx                            | Auto detect |
-| AC_CORE_WITH_FMA                     | build core with x86 fma and avx                    | Auto detect |
+| AC_CORE_WITH_AVX2                    | build core with x86 avx2                           | Auto detect |
+| AC_CORE_WITH_AVX512                  | build core with x86 avx512                         | Auto detect |
+| AC_CORE_WITH_FMA                     | build core with x86 fma                            | Auto detect |
 | AC_CORE_WITH_NEON                    | build core with arm neon                           | Auto detect |
+| AC_CORE_WITH_RVV                     | build core with risc-v vector                      | Auto detect |
+| AC_CORE_WITH_LSX                     | build core with loongarch lsx                      | Auto detect |
+| AC_CORE_WITH_LASX                    | build core with loongarch lasx                     | Auto detect |
+| AC_CORE_WITH_MSA                     | build core with mips msa                           | Auto detect |
+| AC_CORE_WITH_ALTIVEC                 | build core with powerpc altivec                    | Auto detect |
+| AC_CORE_WITH_VSX                     | build core with powerpc vsx                        | Auto detect |
 | AC_CORE_WITH_WASM_SIMD128            | build core with wasm simd128                       | Auto detect |
 | AC_CORE_WITH_OPENCL                  | build core with opencl                             | OFF         |
 | AC_CORE_WITH_CUDA                    | build core with cuda                               | OFF         |
+| AC_CORE_WITH_FPNG                    | build core with fpng                               | ON          |
 | AC_CORE_ENABLE_FAST_MATH             | enable fast math for core                          | OFF         |
 | AC_CORE_DISABLE_IMAGE_IO             | disable image file read and write for core         | OFF         |
 | AC_BUILD_CLI                         | build cli                                          | ON          |
@@ -153,8 +166,7 @@ Tested with Apple Clang via github actions, `MACOSX_DEPLOYMENT_TARGET` >= 10.12 
 | AC_BUILD_BINDING_C                   | build c binding for core                           | OFF         |
 | AC_BUILD_BINDING_PYTHON              | build python binding for core                      | OFF         |
 | AC_TOOLS_BENCHMARK                   | build benchmark                                    | OFF         |
-| AC_TEST_UTIL                         | build util module test                             | OFF         |
-| AC_TEST_VIDEO                        | build video module test                            | OFF         |
+| AC_BUILD_TESTS                       | build tests                                        | OFF         |
 | AC_ENABLE_LTO                        | enable LTO                                         | OFF         |
 | AC_ENABLE_STATIC_CRT                 | enable static link crt                             | OFF         |
 | AC_DISABLE_RTTI                      | disable rtti                                       | OFF         |
@@ -164,8 +176,10 @@ Tested with Apple Clang via github actions, `MACOSX_DEPLOYMENT_TARGET` >= 10.12 
 There are some convenient presets:
 
 `AC_PRESET_RELEASE`
+- AC_CORE_WITH_EIGEN3
 - AC_CORE_WITH_OPENCL
 - AC_CORE_WITH_CUDA
+- AC_CORE_WITH_FPNG
 - AC_CORE_ENABLE_FAST_MATH
 - AC_BUILD_CLI
 - AC_BUILD_GUI

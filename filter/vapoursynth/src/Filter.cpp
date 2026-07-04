@@ -5,6 +5,7 @@
 #include <VSHelper4.h>
 
 #include "AC/Core.hpp"
+#include "AC/Util/Misc.hpp"
 
 #define EXIT_WITH_ERROR(msg) do { vsapi->mapSetError(out, (msg)); if (node) vsapi->freeNode(node); return; } while(0)
 
@@ -66,25 +67,26 @@ static void VS_CC create(const VSMap* in, VSMap* out, void* /*userData*/, VSCore
         {
             if (vi->format.sampleType == stInteger && vi->format.bitsPerSample == 8) return ac::core::Image::UInt8;
             if (vi->format.sampleType == stInteger && vi->format.bitsPerSample == 16) return ac::core::Image::UInt16;
+            if (vi->format.sampleType == stFloat && vi->format.bitsPerSample == 16) return ac::core::Image::Float16;
             if (vi->format.sampleType == stFloat && vi->format.bitsPerSample == 32) return ac::core::Image::Float32;
         }
         return 0;
     }();
-    if (!type) EXIT_WITH_ERROR("Anime4KCPP: only planar YUV uint8, uint16 and float32 input supported");
+    if (!type) EXIT_WITH_ERROR("Anime4KCPP: only planar YUV uint8, uint16, float16 and float32 input supported");
 
     auto factor = static_cast<double>(vsapi->mapGetFloat(in, "factor", 0, &err));
     if (err != peSuccess) factor = 2.0;
     if (factor <= 1.0) EXIT_WITH_ERROR("Anime4KCPP: this is a upscaler, so make sure factor > 1.0");
 
     auto processorType = vsapi->mapGetData(in, "processor", 0, &err);
-    if (err != peSuccess) processorType = "cpu";
+    if (err != peSuccess) processorType = "auto";
 
     auto device = static_cast<int>(vsapi->mapGetInt(in, "device", 0, &err));
     if (err != peSuccess) device = 0;
     if (device < 0) EXIT_WITH_ERROR("Anime4KCPP: the device index cannot be negative");
 
     auto model = vsapi->mapGetData(in, "model", 0, &err);
-    if (err != peSuccess) model = "acnet-hdn0";
+    if (err != peSuccess) model = "acnet-f8b8-hdn";
 
     auto processor = ac::core::Processor::create(processorType, device, model);
     if (!processor->ok()) EXIT_WITH_ERROR(processor->error());
@@ -92,8 +94,8 @@ static void VS_CC create(const VSMap* in, VSMap* out, void* /*userData*/, VSCore
     auto ctx = new Context{};
     ctx->node = node;
     ctx->vi = *vi;
-    ctx->vi.width = static_cast<decltype(ctx->vi.width)>(vi->width * factor);
-    ctx->vi.height = static_cast<decltype(ctx->vi.height)>(vi->height * factor);
+    ctx->vi.width = ac::util::align(static_cast<decltype(ctx->vi.width)>(vi->width * factor), 2);
+    ctx->vi.height = ac::util::align(static_cast<decltype(ctx->vi.height)>(vi->height * factor), 2);
     ctx->type = type;
     ctx->factor = factor;
     ctx->processor = processor;
@@ -104,7 +106,7 @@ static void VS_CC create(const VSMap* in, VSMap* out, void* /*userData*/, VSCore
 
 VS_EXTERNAL_API(void) VapourSynthPluginInit2(VSPlugin* plugin, const VSPLUGINAPI* vspapi)
 {
-    vspapi->configPlugin("github.tianzerl.anime4kcpp", "anime4kcpp", "Anime4KCPP for VapourSynth", VS_MAKE_VERSION(3, 1), VAPOURSYNTH_API_VERSION, 0, plugin);
+    vspapi->configPlugin("github.tianzerl.anime4kcpp", "anime4kcpp", "Anime4KCPP for VapourSynth", VS_MAKE_VERSION(AC_VERSION_MAJOR, AC_VERSION_MINOR), VAPOURSYNTH_API_VERSION, 0, plugin);
     vspapi->registerFunction("ACUpscale",
         "clip:vnode;"
         "factor:float:opt;"

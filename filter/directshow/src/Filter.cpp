@@ -11,6 +11,7 @@
 
 #include "AC/Core.hpp"
 #include "AC/Specs.hpp"
+#include "AC/Util/Misc.hpp"
 
 #include "Registry.hpp"
 #include "SideData.hpp"
@@ -56,29 +57,28 @@ public:
 
     STDMETHODIMP NonDelegatingQueryInterface(REFIID riid, void** ppv) override;
     CBasePin* GetPin(int n) override;
-
     HRESULT CheckInputType(const CMediaType* mtIn) override;
     HRESULT CheckTransform(const CMediaType* mtIn, const CMediaType* mtOut) override;
     HRESULT GetMediaType(int pos, CMediaType* mt) override;
+    HRESULT SetMediaType(PIN_DIRECTION direction, const CMediaType* mt) override;
     HRESULT DecideBufferSize(IMemAllocator* alloctor, ALLOCATOR_PROPERTIES* request) override;
     HRESULT Transform(IMediaSample* in, IMediaSample* out) override;
-
+    STDMETHODIMP Pause() override;
     STDMETHODIMP GetPages(CAUUID* pages) override;
 
 private:
     Filter(TCHAR* name, LPUNKNOWN punk, HRESULT* phr) noexcept;
 
+    void updateOutputStride() noexcept;
+
 private:
-    struct Size { int width, height; } limit{};
+    struct { int width, height; } limit{};
 
     struct
     {
-        Size src, dst;
+        struct { int width, height, stride; } src, dst;
         int channels;
-        int part;
     } luma{}, chroma{};
-
-    int totalParts{};
 
     struct Format
     {
@@ -292,28 +292,17 @@ HRESULT Filter::CheckInputType(const CMediaType* const mtIn)
     if (*mtIn->FormatType() != FORMAT_VideoInfo2 && *mtIn->FormatType() != FORMAT_VideoInfo)
         return VFW_E_TYPE_NOT_ACCEPTED;
 
-    format = [&]() -> Format {
-        // planar: YYYYUUVV
-        if (*mtIn->Subtype() == MEDIASUBTYPE_I420 ||
-            *mtIn->Subtype() == MEDIASUBTYPE_IYUV ||
-            *mtIn->Subtype() == MEDIASUBTYPE_YV12) return Format{ ac::core::Image::UInt8, {2, 2}, false };
-        // planar: YUV422
-        if (*mtIn->Subtype() == MEDIASUBTYPE_YV16) return Format{ ac::core::Image::UInt8, {2, 1}, false };
-        // planar: YUV444
-        if (*mtIn->Subtype() == MEDIASUBTYPE_YV24) return Format{ ac::core::Image::UInt8, {1, 1}, false };
-        // packed: YYYYUVUV
-        if (*mtIn->Subtype() == MEDIASUBTYPE_NV12) return Format{ ac::core::Image::UInt8, {2, 2}, true };
-        if (*mtIn->Subtype() == MEDIASUBTYPE_P010 ||
-            *mtIn->Subtype() == MEDIASUBTYPE_P016) return Format{ ac::core::Image::UInt16, {2, 2}, true };
-        // packed: YUV422
-        if (*mtIn->Subtype() == MEDIASUBTYPE_P210 ||
-            *mtIn->Subtype() == MEDIASUBTYPE_P216) return Format{ ac::core::Image::UInt16, {2, 1}, true };
-        // packed: YUV444
-        if (*mtIn->Subtype() == MEDIASUBTYPE_NV24) return Format{ ac::core::Image::UInt8, {1, 1}, true };
-        return {};
-    }();
-
-    if (!format) return VFW_E_TYPE_NOT_ACCEPTED;
+    if (*mtIn->Subtype() != MEDIASUBTYPE_I420 &&
+        *mtIn->Subtype() != MEDIASUBTYPE_IYUV &&
+        *mtIn->Subtype() != MEDIASUBTYPE_YV12 &&
+        *mtIn->Subtype() != MEDIASUBTYPE_YV16 &&
+        *mtIn->Subtype() != MEDIASUBTYPE_YV24 &&
+        *mtIn->Subtype() != MEDIASUBTYPE_NV12 &&
+        *mtIn->Subtype() != MEDIASUBTYPE_P010 &&
+        *mtIn->Subtype() != MEDIASUBTYPE_P016 &&
+        *mtIn->Subtype() != MEDIASUBTYPE_P210 &&
+        *mtIn->Subtype() != MEDIASUBTYPE_P216 &&
+        *mtIn->Subtype() != MEDIASUBTYPE_NV24) return VFW_E_TYPE_NOT_ACCEPTED;
 
     auto checkVideoInfo = [&](auto* vi) -> HRESULT {
         if (vi->bmiHeader.biWidth > limit.width || vi->bmiHeader.biHeight > limit.height)
@@ -346,34 +335,71 @@ HRESULT Filter::GetMediaType(const int pos, CMediaType* const mt)
     auto hr = m_pInput->ConnectionMediaType(mt);
     if (FAILED(hr)) return hr;
 
-    auto setVideoInfo = [&](auto* vi) {
-        luma.src.width = vi->bmiHeader.biWidth;
-        luma.src.height = vi->bmiHeader.biHeight;
-        luma.dst.width = static_cast<decltype(luma.dst.width)>(luma.src.width * factor);
-        luma.dst.height = static_cast<decltype(luma.dst.height)>(luma.src.height * factor);
-        luma.channels = 1;
-        luma.part = format.subsampling.w * format.subsampling.h;
-
-        chroma.src.width = luma.src.width / format.subsampling.w;
-        chroma.src.height = (luma.src.height / format.subsampling.h) * (format.packed ? 1 : 2);
-        chroma.dst.width = luma.dst.width / format.subsampling.w;
-        chroma.dst.height = (luma.dst.height / format.subsampling.h) * (format.packed ? 1 : 2);
-        chroma.channels = format.packed ? 2 : 1;
-        chroma.part = 2;
-
-        totalParts = luma.part + chroma.part;
-
+    auto updateVideoInfo = [&](auto* vi) {
         vi->bmiHeader.biWidth = luma.dst.width;
         vi->bmiHeader.biHeight = luma.dst.height;
         vi->bmiHeader.biSizeImage = DIBSIZE(vi->bmiHeader);
         mt->SetSampleSize(vi->bmiHeader.biSizeImage);
-        SetRect(&vi->rcSource, 0, 0, luma.dst.width, luma.dst.height);
-        SetRect(&vi->rcTarget, 0, 0, luma.dst.width, luma.dst.height);
+        SetRect(&vi->rcSource, 0, 0, vi->bmiHeader.biWidth, vi->bmiHeader.biHeight);
+        SetRect(&vi->rcTarget, 0, 0, vi->bmiHeader.biWidth, vi->bmiHeader.biHeight);
     };
     if (*mt->FormatType() == FORMAT_VideoInfo2)
-        setVideoInfo(reinterpret_cast<VIDEOINFOHEADER2*>(mt->Format()));
+        updateVideoInfo(reinterpret_cast<VIDEOINFOHEADER2*>(mt->Format()));
     else
-        setVideoInfo(reinterpret_cast<VIDEOINFOHEADER*>(mt->Format()));
+        updateVideoInfo(reinterpret_cast<VIDEOINFOHEADER*>(mt->Format()));
+
+    return S_OK;
+}
+HRESULT Filter::SetMediaType(PIN_DIRECTION direction, const CMediaType* const mt)
+{
+    if (direction == PINDIR_INPUT)
+    {
+        format = [&]() -> Format {
+            // planar: YYYYUUVV
+            if (*mt->Subtype() == MEDIASUBTYPE_I420 ||
+                *mt->Subtype() == MEDIASUBTYPE_IYUV ||
+                *mt->Subtype() == MEDIASUBTYPE_YV12) return Format{ ac::core::Image::UInt8, {2, 2}, false };
+            // planar: YUV422
+            if (*mt->Subtype() == MEDIASUBTYPE_YV16) return Format{ ac::core::Image::UInt8, {2, 1}, false };
+            // planar: YUV444
+            if (*mt->Subtype() == MEDIASUBTYPE_YV24) return Format{ ac::core::Image::UInt8, {1, 1}, false };
+            // packed: YYYYUVUV
+            if (*mt->Subtype() == MEDIASUBTYPE_NV12) return Format{ ac::core::Image::UInt8, {2, 2}, true };
+            if (*mt->Subtype() == MEDIASUBTYPE_P010 ||
+                *mt->Subtype() == MEDIASUBTYPE_P016) return Format{ ac::core::Image::UInt16, {2, 2}, true };
+            // packed: YUV422
+            if (*mt->Subtype() == MEDIASUBTYPE_P210 ||
+                *mt->Subtype() == MEDIASUBTYPE_P216) return Format{ ac::core::Image::UInt16, {2, 1}, true };
+            // packed: YUV444
+            if (*mt->Subtype() == MEDIASUBTYPE_NV24) return Format{ ac::core::Image::UInt8, {1, 1}, true };
+            return {};
+        }();
+
+        if (!format) return E_FAIL;
+
+        auto setVideoInfo = [&](auto* vi) {
+            luma.channels = 1;
+            luma.src.width = vi->bmiHeader.biWidth;
+            luma.src.height = vi->bmiHeader.biHeight < 0 ? -vi->bmiHeader.biHeight : vi->bmiHeader.biHeight;
+            luma.src.stride = luma.src.width * luma.channels * (format.type & 0xff);
+            luma.dst.width = ac::util::align(static_cast<decltype(luma.dst.width)>(luma.src.width * factor), 2);
+            luma.dst.height = ac::util::align(static_cast<decltype(luma.dst.height)>(luma.src.height * factor), 2);
+            luma.dst.stride = luma.dst.width * luma.channels * (format.type & 0xff);
+
+            chroma.channels = format.packed ? 2 : 1;
+            chroma.src.width = luma.src.width / format.subsampling.w;
+            chroma.src.height = (luma.src.height / format.subsampling.h) * (format.packed ? 1 : 2);
+            chroma.src.stride = luma.src.stride / format.subsampling.w * chroma.channels;
+            chroma.dst.width = luma.dst.width / format.subsampling.w;
+            chroma.dst.height = (luma.dst.height / format.subsampling.h) * (format.packed ? 1 : 2);
+            chroma.dst.stride = luma.dst.stride / format.subsampling.w * chroma.channels;
+        };
+        if (*mt->FormatType() == FORMAT_VideoInfo2)
+            setVideoInfo(reinterpret_cast<VIDEOINFOHEADER2*>(mt->Format()));
+        else
+            setVideoInfo(reinterpret_cast<VIDEOINFOHEADER*>(mt->Format()));
+    }
+    else if (direction == PINDIR_OUTPUT) updateOutputStride();
 
     return S_OK;
 }
@@ -384,16 +410,15 @@ HRESULT Filter::DecideBufferSize(IMemAllocator* const alloctor, ALLOCATOR_PROPER
     CheckPointer(request, E_POINTER);
 
     request->cbBuffer = static_cast<decltype(request->cbBuffer)>(m_pOutput->CurrentMediaType().GetSampleSize());
-
-    if (request->cbAlign == 0) request->cbAlign = 32;
-    if (request->cBuffers == 0) request->cBuffers = 1;
+    request->cbPrefix = 0;
+    if (request->cbAlign == 0) request->cbAlign = 4;
+    if (request->cBuffers == 0) request->cBuffers = 3;
 
     ALLOCATOR_PROPERTIES actual{};
     auto hr = alloctor->SetProperties(request, &actual);
     if (FAILED(hr)) return hr;
 
-    if (request->cBuffers > actual.cBuffers || request->cbBuffer > actual.cbBuffer)
-        return E_FAIL;
+    if (actual.cBuffers < 1 || actual.cbBuffer < request->cbBuffer) return E_FAIL;
 
     return S_OK;
 }
@@ -407,13 +432,13 @@ HRESULT Filter::Transform(IMediaSample* const in, IMediaSample* const out)
     in->GetPointer(&src);
     out->GetPointer(&dst);
 
-    ac::core::Image srcy{ luma.src.width, luma.src.height, luma.channels, format.type, src, ((in->GetActualDataLength() * luma.part) / totalParts) / luma.src.height };
-    ac::core::Image dsty{ luma.dst.width, luma.dst.height, luma.channels, format.type, dst, ((out->GetActualDataLength() * luma.part) / totalParts) / luma.dst.height };
+    ac::core::Image srcy{ luma.src.width, luma.src.height, luma.channels, format.type, src, luma.src.stride };
+    ac::core::Image dsty{ luma.dst.width, luma.dst.height, luma.channels, format.type, dst, luma.dst.stride };
     processor->process(srcy, dsty, factor);
     if (!processor->ok()) return E_FAIL;
 
-    ac::core::Image srcuv{ chroma.src.width, chroma.src.height, chroma.channels, format.type, src + srcy.size(), ((in->GetActualDataLength() * chroma.part) / totalParts) / chroma.src.height };
-    ac::core::Image dstuv{ chroma.dst.width, chroma.dst.height, chroma.channels, format.type, dst + dsty.size(), ((out->GetActualDataLength() * chroma.part) / totalParts) / chroma.dst.height };
+    ac::core::Image srcuv{ chroma.src.width, chroma.src.height, chroma.channels, format.type, src + srcy.size(), chroma.src.stride };
+    ac::core::Image dstuv{ chroma.dst.width, chroma.dst.height, chroma.channels, format.type, dst + dsty.size(), chroma.dst.stride };
     ac::core::resize(srcuv, dstuv, 0.0, 0.0);
 
     Microsoft::WRL::ComPtr<IMediaSideData> inputSideData{};
@@ -436,6 +461,16 @@ HRESULT Filter::Transform(IMediaSample* const in, IMediaSample* const out)
 
     return S_OK;
 }
+STDMETHODIMP Filter::Pause()
+{
+    auto initState = m_State;
+
+    auto hr = CTransformFilter::Pause();
+
+    if (SUCCEEDED(hr) && (initState == State_Stopped)) updateOutputStride();
+
+    return hr;
+}
 STDMETHODIMP Filter::GetPages(CAUUID* const pages)
 {
     CheckPointer(pages, E_POINTER);
@@ -445,6 +480,28 @@ STDMETHODIMP Filter::GetPages(CAUUID* const pages)
     if (!pages->pElems) return E_OUTOFMEMORY;
     pages->pElems[0] = CLSID_AC_PROPERTY_PAGE;
     return S_OK;
+}
+void Filter::updateOutputStride() noexcept
+{
+    auto getBitmapInfo = [](auto* vi) { return &vi->bmiHeader; };
+    Microsoft::WRL::ComPtr<IMediaSample> sample{};
+    if (SUCCEEDED(m_pOutput->GetDeliveryBuffer(&sample, nullptr, nullptr, 0)) && sample)
+    {
+        BITMAPINFOHEADER* bi = nullptr;
+        AM_MEDIA_TYPE* amt = nullptr;
+        if (SUCCEEDED(sample->GetMediaType(&amt)) && amt)
+        {
+            if (amt->formattype == FORMAT_VideoInfo2)
+                bi = getBitmapInfo(reinterpret_cast<VIDEOINFOHEADER2*>(amt->pbFormat));
+            else
+                bi = getBitmapInfo(reinterpret_cast<VIDEOINFOHEADER*>(amt->pbFormat));
+
+            luma.dst.stride = bi->biWidth * luma.channels * (format.type & 0xff);
+            chroma.dst.stride = luma.dst.stride / format.subsampling.w * chroma.channels;
+
+            DeleteMediaType(amt);
+        }
+    }
 }
 
 CUnknown* PropertyPage::CreateInstance(const LPUNKNOWN punk, HRESULT* const phr)
@@ -460,6 +517,44 @@ INT_PTR PropertyPage::OnReceiveMessage(const HWND hwnd, const UINT msg, const WP
     {
     case WM_COMMAND:
     {
+        WORD id = LOWORD(wparam);
+        WORD code = HIWORD(wparam);
+
+        if (((id == IDC_COMBO_MODEL || id == IDC_COMBO_PROCESSOR) && code == CBN_SELCHANGE) || (id == IDC_EDIT_DEVICE && code == EN_SETFOCUS))
+        {
+            TCHAR buffer[StringBufferSize]{};
+
+            auto pos = 0;
+            auto len = NUMELMS(buffer);
+
+            if (id == IDC_COMBO_MODEL)
+            {
+                int idx = ComboBox_GetCurSel(GetDlgItem(m_Dlg, IDC_COMBO_MODEL));
+                auto&& model = ac::specs::ModelList[idx];
+
+                pos += _stprintf_s(buffer + pos, len - pos, TEXT("%s\r\n"), A2T(model.name));
+                pos += _stprintf_s(buffer + pos, len - pos, TEXT("parameter count: %d\r\n"), model.parameterCount);
+                if (model.version) pos += _stprintf_s(buffer + pos, len - pos, TEXT("version: %s\r\n"), A2T(model.version));
+                if (model.author) pos += _stprintf_s(buffer + pos, len - pos, TEXT("author: %s\r\n"), A2T(model.author));
+                if (model.homepage) pos += _stprintf_s(buffer + pos, len - pos, TEXT("homepage: %s\r\n"), A2T(model.homepage));
+                _stprintf_s(buffer + pos, len - pos, TEXT("description: %s\r\n"), A2T(model.description));
+            }
+            else if (id == IDC_COMBO_PROCESSOR)
+            {
+                int idx = ComboBox_GetCurSel(GetDlgItem(m_Dlg, IDC_COMBO_PROCESSOR));
+                auto&& processor = ac::specs::ProcessorList[idx];
+
+                _stprintf_s(buffer, len, TEXT("%s\r\n%s\r\n"), A2T(processor.name), A2T(processor.description));
+            }
+            else if (id == IDC_EDIT_DEVICE)
+            {
+                util::asciiToWindowsAscii(ac::core::Processor::listInfo(), buffer, NUMELMS(buffer));
+                Edit_SetText(GetDlgItem(m_Dlg, IDC_EDIT_INFO), buffer);
+            }
+
+            Edit_SetText(GetDlgItem(m_Dlg, IDC_EDIT_INFO), buffer);
+        }
+
         if (isInitialized)
         {
             m_bDirty = TRUE;
@@ -478,7 +573,7 @@ HRESULT PropertyPage::OnActivate()
     _stprintf_s(buffer, NUMELMS(buffer), TEXT("%.2lf"), factor);
     Edit_SetText(GetDlgItem(m_Dlg, IDC_EDIT_FACTOR), buffer);
 
-    for (auto item : ac::specs::ProcessorList) ComboBox_AddString(GetDlgItem(m_Dlg, IDC_COMBO_PROCESSOR), A2T(item));
+    for (auto&& item : ac::specs::ProcessorList) ComboBox_AddString(GetDlgItem(m_Dlg, IDC_COMBO_PROCESSOR), A2T(item.name));
     auto ProcessorType = gRegArgument.getProcessorType();
     ComboBox_SelectString(GetDlgItem(m_Dlg, IDC_COMBO_PROCESSOR), -1, ProcessorType);
 
@@ -486,7 +581,7 @@ HRESULT PropertyPage::OnActivate()
     _stprintf_s(buffer, NUMELMS(buffer), TEXT("%d"), device);
     Edit_SetText(GetDlgItem(m_Dlg, IDC_EDIT_DEVICE), buffer);
 
-    for (auto item : ac::specs::ModelList) ComboBox_AddString(GetDlgItem(m_Dlg, IDC_COMBO_MODEL), A2T(item));
+    for (auto&& item : ac::specs::ModelList) ComboBox_AddString(GetDlgItem(m_Dlg, IDC_COMBO_MODEL), A2T(item.name));
     auto modelName = gRegArgument.getModelName();
     ComboBox_SelectString(GetDlgItem(m_Dlg, IDC_COMBO_MODEL), -1, modelName);
 

@@ -6,6 +6,8 @@
 
 #include <malloc.h>
 
+#include "AC/Util/Misc.hpp"
+
 #include "SideData.hpp"
 
 class CSideDataMediaSample : public CMediaSample, public IMediaSideData
@@ -168,7 +170,7 @@ HRESULT CSideDataAllocator::Alloc()
     if (m_pBuffer) ReallyFree();
     if (m_lSize < 0 || m_lPrefix < 0 || m_lCount < 0) return E_OUTOFMEMORY;
 
-    auto alignedSize = (m_lSize + m_lPrefix + m_lAlignment - 1) & -m_lAlignment;
+    auto alignedSize = ac::util::align(m_lSize + m_lPrefix, m_lAlignment);
     auto totalSize = m_lCount * static_cast<std::size_t>(alignedSize);
     if (totalSize > MAXLONG) return E_OUTOFMEMORY;
 
@@ -201,6 +203,22 @@ STDMETHODIMP CSideDataInputPin::ReceiveConnection(IPin* const connector, const A
 
         CMediaType mtIn{ *amt };
         hr = CheckMediaType(&mtIn); if (FAILED(hr)) return VFW_E_TYPE_NOT_ACCEPTED;
+
+        if (m_pAllocator) // resize buffer if needed.
+        {
+            ALLOCATOR_PROPERTIES props{};
+            hr = m_pAllocator->GetProperties(&props); if (FAILED(hr)) return E_FAIL;
+            if (mtIn.GetSampleSize() > props.cbBuffer)
+            {
+                ALLOCATOR_PROPERTIES actual{};
+                props.cbBuffer = mtIn.GetSampleSize();
+                hr = m_pAllocator->Decommit(); if (FAILED(hr)) return E_FAIL;
+                hr = m_pAllocator->SetProperties(&props, &actual); if (FAILED(hr)) return E_FAIL;
+                hr = m_pAllocator->Commit(); if (FAILED(hr)) return E_FAIL;
+                if (actual.cbBuffer < props.cbBuffer) return E_FAIL;
+            }
+        }
+
         hr = SetMediaType(&mtIn); if (FAILED(hr)) return VFW_E_TYPE_NOT_ACCEPTED;
 
         auto outputPin = static_cast<CBaseOutputPin*>(m_pTransformFilter->GetPin(1));

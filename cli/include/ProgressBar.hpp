@@ -1,5 +1,5 @@
-#ifndef AC_CLI_PROGRESS_BAR_CPP
-#define AC_CLI_PROGRESS_BAR_CPP
+#ifndef AC_CLI_PROGRESS_BAR_HPP
+#define AC_CLI_PROGRESS_BAR_HPP
 
 #include "AC/Util/Stopwatch.hpp"
 
@@ -10,6 +10,7 @@ public:
 
     void reset() noexcept;
     void print(double p) noexcept;
+    void clear() noexcept;
     void finish() noexcept;
 private:
     ac::util::Stopwatch stopwatch;

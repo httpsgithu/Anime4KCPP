@@ -15,7 +15,7 @@ public:
     } gui{};
 
     struct {
-        QString imageSuffix{ ".jpg" };
+        QString imageSuffix{ ".png" };
         QString videoSuffix{ ".mkv" };
         QString imagePrefix{ "ac_" };
         QString videoPrefix{ "ac_" };
@@ -24,6 +24,7 @@ public:
     } io{};
 
     struct {
+        int threads = 0;
         int device = 0;
         double factor = 2.0;
         QString processor{};

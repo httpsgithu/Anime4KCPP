@@ -10,10 +10,11 @@ struct Options
 {
     std::vector<std::string> inputs{};
     std::vector<std::string> outputs{};
-    std::string model{ ac::specs::ModelList[0] };
-    std::string processor{ ac::specs::ProcessorList[0] };
+    std::string model{ "acnet-f8b8-hdn" };
+    std::string processor{ "auto" };
     double factor = 2.0;
     int device = 0;
+    unsigned int threads = 0;
 
     struct {
         // decoder hints
@@ -38,6 +39,6 @@ struct Options
     } list;
 };
 
-Options parse(int argc, const char* const* argv) noexcept;
+Options parse(int argc, char** const argv) noexcept;
 
 #endif

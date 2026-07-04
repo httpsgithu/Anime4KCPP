@@ -9,7 +9,7 @@ if(AC_BUILD_FILTER_DIRECTSHOW)
 endif()
 
 if(AC_BUILD_FILTER_AVISYNTH_VAPOURSYNTH)
-    project(ac_filter_avs_vs VERSION 3.1.0.0 LANGUAGES CXX)
+    project(ac_filter_avs_vs LANGUAGES CXX)
 
     set(FILTER_SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR})
     set(FILTER_BINARY_DIR ${CMAKE_CURRENT_BINARY_DIR})
@@ -22,7 +22,12 @@ if(AC_BUILD_FILTER_AVISYNTH_VAPOURSYNTH)
         ${FILTER_SOURCE_DIR}/vapoursynth/src/Filter.cpp
     )
 
-    target_link_libraries(ac_filter_avs_vs PRIVATE ac dep::avisynth dep::vapoursynth)
+    target_link_libraries(ac_filter_avs_vs PRIVATE ac ac_util_misc dep::avisynth dep::vapoursynth)
+
+    target_compile_definitions(ac_filter_avs_vs PRIVATE
+        AC_VERSION_MAJOR=${AC_VERSION_MAJOR}
+        AC_VERSION_MINOR=${AC_VERSION_MINOR}
+    )
 
     ac_check_enable_static_crt(ac_filter_avs_vs)
 

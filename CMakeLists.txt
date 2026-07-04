@@ -5,17 +5,16 @@ if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE Release CACHE STRING "Build Type" FORCE)
 endif()
 
-project(Anime4KCPP LANGUAGES CXX)
+project(Anime4KCPP VERSION 3.2.0.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
-set(CMAKE_CXX_EXTENSIONS OFF)
 
 set(TOP_DIR ${CMAKE_CURRENT_SOURCE_DIR})
 set(CMAKE_DIR ${TOP_DIR}/cmake)
 set(DEPENDENCY_DIR ${CMAKE_DIR}/dependency)
-set(LIBRARY_OUTPUT_PATH ${PROJECT_BINARY_DIR}/bin)
-set(EXECUTABLE_OUTPUT_PATH ${PROJECT_BINARY_DIR}/bin)
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${PROJECT_BINARY_DIR}/bin)
+set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${PROJECT_BINARY_DIR}/bin)
 
 string(TIMESTAMP DATE_TODAY "%Y-%m-%d")
 string(TIMESTAMP DATE_YEAR "%Y")
@@ -26,26 +25,31 @@ else()
     set(BUILD_ARCH_32BIT FALSE)
 endif()
 
-if(CMAKE_INSTALL_PREFIX_INITIALIZED_TO_DEFAULT)
-    message(STATUS "Set default install path ${TOP_DIR}/install")
-    set_property(CACHE CMAKE_INSTALL_PREFIX PROPERTY VALUE "${TOP_DIR}/install")
-endif()
-
+include(CMakeDependentOption)
 include(GNUInstallDirs)
 
 include(${CMAKE_DIR}/CheckCompilerSIMD.cmake)
 
+cmake_dependent_option(AC_CORE_WITH_SSE "build core with x86 sse" ON AC_COMPILER_SUPPORT_SSE OFF)
+cmake_dependent_option(AC_CORE_WITH_SSE2 "build core with x86 sse2" ON AC_COMPILER_SUPPORT_SSE2 OFF)
+cmake_dependent_option(AC_CORE_WITH_AVX "build core with x86 avx" ON AC_COMPILER_SUPPORT_AVX OFF)
+cmake_dependent_option(AC_CORE_WITH_AVX2 "build core with x86 avx2" ON "AC_COMPILER_SUPPORT_AVX2;AC_COMPILER_SUPPORT_FMA;AC_COMPILER_SUPPORT_F16C" OFF)
+cmake_dependent_option(AC_CORE_WITH_AVX512 "build core with x86 avx512" ON "AC_COMPILER_SUPPORT_AVX512;AC_COMPILER_SUPPORT_FMA" OFF)
+cmake_dependent_option(AC_CORE_WITH_FMA "build core with x86 fma" ON "AC_COMPILER_SUPPORT_FMA;AC_COMPILER_SUPPORT_AVX" OFF)
+cmake_dependent_option(AC_CORE_WITH_NEON "build core with arm neon" ON AC_COMPILER_SUPPORT_NEON OFF)
+cmake_dependent_option(AC_CORE_WITH_RVV "build core with risc-v vector" ON AC_COMPILER_SUPPORT_RVV OFF)
+cmake_dependent_option(AC_CORE_WITH_LSX "build core with loongarch lsx" ON AC_COMPILER_SUPPORT_LSX OFF)
+cmake_dependent_option(AC_CORE_WITH_LASX "build core with loongarch lasx" ON AC_COMPILER_SUPPORT_LASX OFF)
+cmake_dependent_option(AC_CORE_WITH_MSA "build core with mips msa" ON AC_COMPILER_SUPPORT_MSA OFF)
+cmake_dependent_option(AC_CORE_WITH_ALTIVEC "build core with powerpc altivec" ON AC_COMPILER_SUPPORT_ALTIVEC OFF)
+cmake_dependent_option(AC_CORE_WITH_VSX "build core with powerpc vsx" ON AC_COMPILER_SUPPORT_VSX OFF)
+cmake_dependent_option(AC_CORE_WITH_WASM_SIMD128 "build core with wasm simd128" ON AC_COMPILER_SUPPORT_WASM_SIMD128 OFF)
+
 option(AC_SHARED_LIB "build as a shared library" OFF)
 option(AC_CORE_WITH_EIGEN3 "build core with eigen3" OFF)
-option(AC_CORE_WITH_SSE "build core with x86 sse" ${AC_COMPILER_SUPPORT_SSE})
-option(AC_CORE_WITH_SSE2 "build core with x86 sse2" ${AC_COMPILER_SUPPORT_SSE2})
-option(AC_CORE_WITH_AVX "build core with x86 avx" ${AC_COMPILER_SUPPORT_AVX})
-option(AC_CORE_WITH_AVX2 "build core with x86 avx2" ${AC_COMPILER_SUPPORT_AVX2})
-option(AC_CORE_WITH_FMA "build core with x86 fma and avx" ${AC_COMPILER_SUPPORT_FMA})
-option(AC_CORE_WITH_NEON "build core with arm neon" ${AC_COMPILER_SUPPORT_NEON})
-option(AC_CORE_WITH_WASM_SIMD128 "build core with wasm simd128" ${AC_COMPILER_SUPPORT_WASM_SIMD128})
 option(AC_CORE_WITH_OPENCL "build core with opencl" OFF)
 option(AC_CORE_WITH_CUDA "build core with cuda" OFF)
+option(AC_CORE_WITH_FPNG "build core with fpng" ON)
 option(AC_CORE_ENABLE_FAST_MATH "enable fast math for core" OFF)
 option(AC_CORE_DISABLE_IMAGE_IO "disable image file read and write for core" OFF)
 option(AC_BUILD_CLI "build cli" ON)
@@ -58,8 +62,7 @@ option(AC_BUILD_FILTER_AVISYNTH_VAPOURSYNTH "build an avisynth and vapoursynth u
 option(AC_BUILD_BINDING_C "build c binding for core" OFF)
 option(AC_BUILD_BINDING_PYTHON "build python binding for core" OFF)
 option(AC_TOOLS_BENCHMARK "build benchmark" OFF)
-option(AC_TEST_UTIL "build util module test" OFF)
-option(AC_TEST_VIDEO "build video module test" OFF)
+option(AC_BUILD_TESTS "build tests" OFF)
 option(AC_ENABLE_LTO "enable LTO" OFF)
 option(AC_ENABLE_STATIC_CRT "enable static link crt" OFF)
 option(AC_DISABLE_RTTI "disable rtti" OFF)
@@ -67,8 +70,10 @@ option(AC_DISABLE_EXCEPTION "disable exception" OFF)
 option(AC_DISABLE_PIC "disable pic or pie" OFF)
 
 if(AC_PRESET_RELEASE)
+    set(AC_CORE_WITH_EIGEN3 ON)
     set(AC_CORE_WITH_OPENCL ON)
     set(AC_CORE_WITH_CUDA ON)
+    set(AC_CORE_WITH_FPNG ON)
     set(AC_CORE_ENABLE_FAST_MATH ON)
     set(AC_BUILD_CLI ON)
     set(AC_BUILD_GUI ON)
@@ -77,6 +82,10 @@ if(AC_PRESET_RELEASE)
     if(CMAKE_CXX_COMPILER_ID MATCHES "MSVC")
         set(AC_BUILD_FILTER_DIRECTSHOW ON)
     endif()
+endif()
+
+if(AC_CORE_DISABLE_IMAGE_IO)
+    set(AC_CORE_WITH_FPNG OFF)
 endif()
 
 if(AC_ENABLE_LTO)
@@ -91,32 +100,29 @@ if(AC_ENABLE_LTO)
     endif()
 endif()
 
-if(AC_CORE_WITH_SSE2)
-    set(AC_CORE_WITH_SSE ON)
-endif()
-
-if(AC_CORE_WITH_AVX2)
-    set(AC_CORE_WITH_FMA ON)
-endif()
-
-if(AC_CORE_WITH_FMA)
-    set(AC_CORE_WITH_AVX ON)
-endif()
-
-if(AC_TEST_VIDEO)
-    set(AC_BUILD_VIDEO ON)
-endif()
-
 message(STATUS
 "SIMD support:
     SSE: ${AC_CORE_WITH_SSE}
     SSE2: ${AC_CORE_WITH_SSE2}
     AVX: ${AC_CORE_WITH_AVX}
     AVX2: ${AC_CORE_WITH_AVX2}
+    AVX512: ${AC_CORE_WITH_AVX512}
     FMA: ${AC_CORE_WITH_FMA}
     NEON: ${AC_CORE_WITH_NEON}
+    RVV: ${AC_CORE_WITH_RVV}
+    LSX: ${AC_CORE_WITH_LSX}
+    LASX: ${AC_CORE_WITH_LASX}
+    MSA: ${AC_CORE_WITH_MSA}
+    ALTIVEC: ${AC_CORE_WITH_ALTIVEC}
+    VSX: ${AC_CORE_WITH_VSX}
     WASM_SIMD128: ${AC_CORE_WITH_WASM_SIMD128}
 ")
+
+set(AC_VERSION_MAJOR "${PROJECT_VERSION_MAJOR}")
+set(AC_VERSION_MINOR "${PROJECT_VERSION_MINOR}")
+set(AC_VERSION_PATCH "${PROJECT_VERSION_PATCH}")
+set(AC_VERSION_STR "${AC_VERSION_MAJOR}.${AC_VERSION_MINOR}.${AC_VERSION_PATCH}")
+set(AC_SOVERSION_STR "${AC_VERSION_MAJOR}")
 
 add_compile_definitions(
     AC_COMPILER_ID="${CMAKE_CXX_COMPILER_ID}"
@@ -127,7 +133,7 @@ add_compile_definitions(
 
 function(ac_check_disable_flags ARG_TARGET)
     if(AC_DISABLE_RTTI)
-        if(CMAKE_CXX_COMPILER_ID MATCHES "MSVC" OR (CMAKE_CXX_COMPILER_ID MATCHES "Clang" AND CMAKE_CXX_SIMULATE_ID MATCHES "MSVC" AND CMAKE_CXX_COMPILER_FRONTEND_VARIANT MATCHES "MSVC"))
+        if(CMAKE_CXX_COMPILER_ID MATCHES "MSVC" OR CMAKE_CXX_COMPILER_FRONTEND_VARIANT MATCHES "MSVC")
             target_compile_options(${ARG_TARGET} PRIVATE /GR-)
         else()
             target_compile_options(${ARG_TARGET} PRIVATE -fno-rtti)
@@ -135,7 +141,7 @@ function(ac_check_disable_flags ARG_TARGET)
     endif()
 
     if(AC_DISABLE_EXCEPTION)
-        if(CMAKE_CXX_COMPILER_ID MATCHES "MSVC" OR (CMAKE_CXX_COMPILER_ID MATCHES "Clang" AND CMAKE_CXX_SIMULATE_ID MATCHES "MSVC" AND CMAKE_CXX_COMPILER_FRONTEND_VARIANT MATCHES "MSVC"))
+        if(CMAKE_CXX_COMPILER_ID MATCHES "MSVC" OR CMAKE_CXX_COMPILER_FRONTEND_VARIANT MATCHES "MSVC")
             target_compile_options(${ARG_TARGET} PRIVATE /EHsc /D_HAS_EXCEPTIONS=0)
         else()
             target_compile_options(${ARG_TARGET} PRIVATE -fno-exceptions)
@@ -145,7 +151,7 @@ endfunction()
 
 function(ac_check_enable_static_crt ARG_TARGET)
     if(AC_ENABLE_STATIC_CRT)
-        if(CMAKE_CXX_COMPILER_ID MATCHES "MSVC" OR (CMAKE_CXX_COMPILER_ID MATCHES "Clang" AND CMAKE_CXX_SIMULATE_ID MATCHES "MSVC" AND CMAKE_CXX_COMPILER_FRONTEND_VARIANT MATCHES "MSVC"))
+        if(CMAKE_CXX_COMPILER_ID MATCHES "MSVC" OR CMAKE_CXX_SIMULATE_ID MATCHES "MSVC")
             set_target_properties(${ARG_TARGET} PROPERTIES MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
         else()
             target_link_options(${ARG_TARGET} PRIVATE -static-libgcc -static-libstdc++ -static)
@@ -164,7 +170,10 @@ add_subdirectory(util)
 add_subdirectory(filter)
 add_subdirectory(binding)
 add_subdirectory(tools)
-add_subdirectory(test)
+if(AC_BUILD_TESTS)
+    enable_testing()
+    add_subdirectory(tests)
+endif()
 if(AC_BUILD_VIDEO)
     add_subdirectory(video)
 endif()
@@ -173,6 +182,11 @@ if(AC_BUILD_CLI)
 endif()
 if(AC_BUILD_GUI)
     add_subdirectory(gui)
+endif()
+
+if(CMAKE_INSTALL_PREFIX_INITIALIZED_TO_DEFAULT)
+    message(STATUS "Set default install path ${TOP_DIR}/install")
+    set_property(CACHE CMAKE_INSTALL_PREFIX PROPERTY VALUE "${TOP_DIR}/install")
 endif()
 
 install(
